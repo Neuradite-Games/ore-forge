@@ -34,7 +34,7 @@ or extrapolate from other blockchains.
 - Move Book: https://move-book.com (use https://move-book.com/llms.txt)
 - Sui Docs: https://docs.sui.io (use https://docs.sui.io/llms.txt)
 - Sui Move examples: https://github.com/MystenLabs/sui/tree/main/examples/move
-- Condensed local reference: `../docs/sui-reference.md` in the parent games repo
+- Condensed local reference: `~/git-repos/docs/sui-reference.md` (outside this repo)
 
 ## Project Rules
 
