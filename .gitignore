@@ -1,0 +1,4 @@
+# Move build artifacts (Move.lock IS committed)
+move/*/build/
+
+.DS_Store

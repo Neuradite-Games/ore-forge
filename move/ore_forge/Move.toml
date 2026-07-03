@@ -1,0 +1,7 @@
+[package]
+name = "ore_forge"
+edition = "2024"
+license = "MIT"
+
+# testnet/mainnet are system environments on CLI >= 1.73 — no [environments]
+# section needed. Build with: sui move build --build-env testnet
