@@ -14,10 +14,14 @@ export const PACKAGE_ID = env.PUBLIC_PACKAGE_ID ?? '0x0';
  */
 export const ORIGINAL_PACKAGE_ID = env.PUBLIC_ORIGINAL_PACKAGE_ID || PACKAGE_ID;
 
-/** The shared World object created by the package's init. */
-export const WORLD_ID = env.PUBLIC_WORLD_ID ?? '0x0';
+/** The shared Forge (mint authority) created by forge::create_forge. */
+export const FORGE_ID = env.PUBLIC_FORGE_ID ?? '0x0';
 
-export const isConfigured = PACKAGE_ID !== '0x0' && WORLD_ID !== '0x0';
+export const isConfigured = PACKAGE_ID !== '0x0' && FORGE_ID !== '0x0';
+
+// Coin types anchor to the ORIGINAL package id, like all struct types.
+export const ORE_TYPE = `${ORIGINAL_PACKAGE_ID}::ore::ORE`;
+export const INGOT_TYPE = `${ORIGINAL_PACKAGE_ID}::ingot::INGOT`;
 
 // Session parameters. 0 = forever / unlimited (on-chain sentinel u64::MAX):
 // the session lives until you manually End session (revoke).

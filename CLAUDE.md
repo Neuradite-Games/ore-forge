@@ -48,6 +48,10 @@ or extrapolate from other blockchains.
 - ALL gameplay verbs (mine, smelt, smith) are deliberately session-gated — the
   project exists to test sign-once session keys, including NFT minting.
   Sessions are forever by default (`ttl_ms = 0` / `actions = 0` → u64::MAX)
-  and end only via `revoke`. Keep the invariant that minted assets are always
-  delivered to `cap.player()` inside Move (`smith_*_and_keep`), never to the
-  ephemeral signer and never via client-side transfers.
+  and end only via `revoke`.
+- No world/registry object: ORE and INGOT are real Coin currencies, gear is
+  real Display NFTs. Working coins live in the session "pouch" (the ephemeral
+  address) because spending an owned coin requires its owner's signature;
+  sweeps move them home. Keep the invariant that minted NFTs are delivered to
+  `cap.player()` inside Move (`smith_*_and_keep`), never to the ephemeral
+  signer and never via client-side transfers.

@@ -10,7 +10,6 @@
     ARMOUR_INGOT_COST,
     isConfigured,
     NETWORK,
-    SESSION_ACTIONS,
     SMELT_ORE_COST,
     WEAPON_INGOT_COST,
   } from '$lib/sui/config';
@@ -18,14 +17,15 @@
     buildMineTx,
     buildSmeltTx,
     buildSmithTx,
+    fetchBalances,
+    fetchCoinIds,
     fetchEquipment,
-    fetchPlayerStats,
-    IngotSmeltedBcs,
     OreMinedBcs,
   } from '$lib/sui/forge-client';
   import {
     buildEndSessionTx,
     buildStartSessionTx,
+    buildSweepTx,
     clearStoredSession,
     executeAsSession,
     isUnlimited,
@@ -47,26 +47,28 @@
       void refresh(address);
     } else if (!address && loadedFor) {
       loadedFor = null;
-      gameState.hasPlayer = false;
       gameState.session = null;
     }
   });
 
   async function refresh(player: string) {
     if (!isConfigured) return;
-    const stats = await fetchPlayerStats(client, player);
-    gameState.hasPlayer = stats !== null;
-    if (stats) {
-      gameState.ore = stats.ore;
-      gameState.ingots = stats.ingots;
-      gameState.weaponsSmithed = stats.weaponsSmithed;
-      gameState.armourSmithed = stats.armourSmithed;
-      gameState.equipment = await fetchEquipment(client, player);
-    }
     gameState.session = loadStoredSession(player);
+    const wallet = await fetchBalances(client, player);
+    gameState.walletOre = wallet.ore;
+    gameState.walletIngots = wallet.ingots;
+    gameState.equipment = await fetchEquipment(client, player);
+    if (gameState.session) {
+      const pouch = await fetchBalances(client, gameState.session.sessionAddress);
+      gameState.pouchOre = pouch.ore;
+      gameState.pouchIngots = pouch.ingots;
+    } else {
+      gameState.pouchOre = 0;
+      gameState.pouchIngots = 0;
+    }
   }
 
-  /** Wallet-signed path: execute, check status, wait, return events. */
+  /** Wallet-signed path (used exactly once, at session start). */
   async function signWithWallet(tx: Transaction) {
     const result = await walletAdapter.signAndExecuteTransaction({
       transaction: tx,
@@ -95,21 +97,18 @@
   }
 
   /**
-   * The only wallet popup in the game: creates the player (if needed), mints
-   * the SessionCap, and funds the ephemeral key — one signature.
+   * The only wallet popup in the game: mints the SessionCap and funds the
+   * ephemeral key — one signature, then everything is silent.
    */
   async function startSession() {
     if (!guard()) return;
     gameState.pending = 'start-session';
     try {
       const keypair = loadEphemeralKeypair();
-      const events = await signWithWallet(
-        buildStartSessionTx(keypair.toSuiAddress(), !gameState.hasPlayer),
-      );
+      const events = await signWithWallet(buildStartSessionTx(keypair.toSuiAddress()));
       const session = parseSessionMinted(events);
       if (!session) throw new Error('SessionMinted event not found');
       saveSession(session);
-      gameState.hasPlayer = true;
       gameState.session = session;
       const budget = isUnlimited(session.actionsLeft)
         ? 'unlimited actions'
@@ -122,30 +121,58 @@
     }
   }
 
-  async function endSession() {
-    if (!gameState.session || gameState.pending) return;
-    gameState.pending = 'end-session';
+  /** Session-signed, zero popups: pouch coins land in the real wallet. */
+  async function collectToWallet() {
+    if (!guard() || !sessionValid()) return;
+    const session = gameState.session!;
+    gameState.pending = 'collect';
     try {
-      // Signed by the ephemeral key: revoke the cap, sweep gas back.
+      const coinIds = await fetchCoinIds(client, session.sessionAddress);
+      if (coinIds.length === 0) {
+        addLog('Pouch is empty — nothing to collect');
+        return;
+      }
       await executeAsSession(
         client,
         loadEphemeralKeypair(),
-        buildEndSessionTx($state.snapshot(gameState.session)),
+        buildSweepTx(session, coinIds),
       );
-      addLog('Session revoked, gas allowance returned');
+      addLog('Pouch collected to your wallet 💰');
+      await refresh(address!);
     } catch (error) {
-      addLog(`Revoke failed (session may have expired): ${(error as Error).message}`);
+      addLog(`Collect failed: ${(error as Error).message}`);
+    } finally {
+      gameState.pending = null;
+    }
+  }
+
+  async function endSession() {
+    if (!gameState.session || gameState.pending) return;
+    const session = gameState.session;
+    gameState.pending = 'end-session';
+    try {
+      // Signed by the ephemeral key: revoke the cap, sweep coins + gas home.
+      const coinIds = await fetchCoinIds(client, session.sessionAddress);
+      await executeAsSession(
+        client,
+        loadEphemeralKeypair(),
+        buildEndSessionTx($state.snapshot(session), coinIds),
+      );
+      addLog('Session ended: cap revoked, pouch and gas returned to your wallet');
+    } catch (error) {
+      addLog(`Revoke failed: ${(error as Error).message}`);
     } finally {
       clearStoredSession();
       gameState.session = null;
       gameState.pending = null;
+      if (address) await refresh(address);
     }
   }
 
   function sessionValid(): boolean {
     const session = gameState.session;
     if (!session) {
-      addLog('Start a mining session first');
+      addLog('Start a session first');
       return false;
     }
     if (session.expiresAtMs <= Date.now() || session.actionsLeft <= 0) {
@@ -178,11 +205,11 @@
       );
       const mined = events.find((e) => e.eventType.endsWith('::forge::OreMined'));
       if (!mined) throw new Error('OreMined event not found');
-      const parsed = OreMinedBcs.parse(mined.bcs);
-      gameState.ore = Number(parsed.oreTotal);
+      const amount = Number(OreMinedBcs.parse(mined.bcs).amount);
+      gameState.pouchOre += amount;
       spendSessionAction();
-      gameEvents.emit('mine-result', { nodeId, amount: Number(parsed.amount) });
-      addLog(`Mined ${parsed.amount} ore`);
+      gameEvents.emit('mine-result', { nodeId, amount });
+      addLog(`Mined ${amount} ORE`);
     } catch (error) {
       gameEvents.emit('mine-failed', { nodeId });
       addLog(`Mine failed: ${(error as Error).message}`);
@@ -197,27 +224,24 @@
       gameEvents.emit('smelt-failed');
       return;
     }
-    if (gameState.ore < SMELT_ORE_COST) {
-      addLog(`Need ${SMELT_ORE_COST} ore to smelt an ingot`);
+    if (gameState.pouchOre < SMELT_ORE_COST) {
+      addLog(`Need ${SMELT_ORE_COST} ORE in the pouch to smelt an ingot`);
       gameEvents.emit('smelt-failed');
       return;
     }
     gameState.pending = 'smelt';
     gameEvents.emit('busy', { busy: true });
     try {
-      const events = await executeAsSession(
+      await executeAsSession(
         client,
         loadEphemeralKeypair(),
         buildSmeltTx(gameState.session!.capId),
       );
-      const smelted = events.find((e) => e.eventType.endsWith('::forge::IngotSmelted'));
-      if (!smelted) throw new Error('IngotSmelted event not found');
-      const parsed = IngotSmeltedBcs.parse(smelted.bcs);
-      gameState.ore -= Number(parsed.oreSpent);
-      gameState.ingots = Number(parsed.ingotTotal);
+      gameState.pouchOre -= SMELT_ORE_COST;
+      gameState.pouchIngots += 1;
       spendSessionAction();
       gameEvents.emit('smelt-result');
-      addLog('Smelted 1 ingot');
+      addLog('Smelted 1 INGOT');
     } catch (error) {
       gameEvents.emit('smelt-failed');
       addLog(`Smelt failed: ${(error as Error).message}`);
@@ -233,8 +257,8 @@
       return;
     }
     const cost = kind === 'weapon' ? WEAPON_INGOT_COST : ARMOUR_INGOT_COST;
-    if (gameState.ingots < cost) {
-      addLog(`Need ${cost} ingots to smith a ${kind}`);
+    if (gameState.pouchIngots < cost) {
+      addLog(`Need ${cost} INGOT in the pouch to smith a ${kind}`);
       gameEvents.emit('smith-failed', { kind });
       return;
     }
@@ -247,13 +271,11 @@
         loadEphemeralKeypair(),
         buildSmithTx(kind, gameState.session!.capId),
       );
+      gameState.pouchIngots -= cost;
       spendSessionAction();
-      gameState.ingots -= cost;
-      if (kind === 'weapon') gameState.weaponsSmithed += 1;
-      else gameState.armourSmithed += 1;
       gameState.equipment = await fetchEquipment(client, address!);
       gameEvents.emit('smith-result', { kind });
-      addLog(`Smithed a ${kind} ⚒`);
+      addLog(`Smithed a ${kind} — the NFT is in your wallet ⚒`);
     } catch (error) {
       gameEvents.emit('smith-failed', { kind });
       addLog(`Smith failed: ${(error as Error).message}`);
@@ -280,8 +302,11 @@
   }
 
   function formatActions(actionsLeft: number): string {
-    return isUnlimited(actionsLeft) ? '∞' : `${actionsLeft}/${SESSION_ACTIONS}`;
+    return isUnlimited(actionsLeft) ? '∞' : String(actionsLeft);
   }
+
+  const weapons = $derived(gameState.equipment.filter((e) => e.kind === 'weapon'));
+  const armours = $derived(gameState.equipment.filter((e) => e.kind === 'armour'));
 </script>
 
 <svelte:head>
@@ -299,7 +324,7 @@
   {#if !isConfigured}
     <div class="banner">
       Contracts not configured. Deploy the Move package, then set
-      <code>PUBLIC_PACKAGE_ID</code> and <code>PUBLIC_WORLD_ID</code> in
+      <code>PUBLIC_PACKAGE_ID</code> and <code>PUBLIC_FORGE_ID</code> in
       <code>app/.env</code> — see <code>PROJECT.md</code> for instructions.
     </div>
   {/if}
@@ -332,8 +357,7 @@
           {:else}
             <p>
               Sign <strong>once</strong> to start a session — then everything (mining, smelting,
-              smithing NFTs) runs with zero popups, forever, until you end it. NFTs always
-              land in your real wallet.
+              smithing NFTs) runs with zero popups, forever, until you end it.
             </p>
             <button onclick={startSession} disabled={gameState.pending !== null}>
               Start session
@@ -342,20 +366,60 @@
         </section>
 
         <section>
-          <h2>Inventory</h2>
+          <h2>Pouch <span class="sub">(session coins)</span></h2>
           <ul class="inventory">
-            <li>🪨 Ore <strong>{gameState.ore}</strong></li>
-            <li>🧱 Ingots <strong>{gameState.ingots}</strong></li>
-            <li>⚔️ Weapons <strong>{gameState.weaponsSmithed}</strong></li>
-            <li>🛡️ Armour <strong>{gameState.armourSmithed}</strong></li>
+            <li>
+              <img src="/items/ore.svg" alt="ORE" /> ORE
+              <strong>{gameState.pouchOre}</strong>
+            </li>
+            <li>
+              <img src="/items/ingot.svg" alt="INGOT" /> INGOT
+              <strong>{gameState.pouchIngots}</strong>
+            </li>
+          </ul>
+          <button
+            class="secondary"
+            onclick={collectToWallet}
+            disabled={gameState.pending !== null ||
+              !gameState.session ||
+              gameState.pouchOre + gameState.pouchIngots === 0}
+          >
+            Collect to wallet
+          </button>
+        </section>
+
+        <section>
+          <h2>Wallet <span class="sub">(your real assets)</span></h2>
+          <ul class="inventory">
+            <li>
+              <img src="/items/ore.svg" alt="ORE" /> ORE
+              <strong>{gameState.walletOre}</strong>
+            </li>
+            <li>
+              <img src="/items/ingot.svg" alt="INGOT" /> INGOT
+              <strong>{gameState.walletIngots}</strong>
+            </li>
+            <li>
+              <img src="/items/sword.svg" alt="Sword" /> Swords
+              <strong>{weapons.length}</strong>
+            </li>
+            <li>
+              <img src="/items/armour.svg" alt="Armour" /> Armour
+              <strong>{armours.length}</strong>
+            </li>
           </ul>
           {#if gameState.equipment.length > 0}
             <details>
-              <summary>{gameState.equipment.length} owned item(s)</summary>
+              <summary>{gameState.equipment.length} NFT(s)</summary>
               <ul class="equipment">
                 {#each gameState.equipment as item (item.objectId)}
                   <li>
-                    {item.kind === 'weapon' ? '⚔️' : '🛡️'}
+                    <img
+                      src={item.kind === 'weapon'
+                        ? '/items/sword.svg'
+                        : '/items/armour.svg'}
+                      alt={item.kind}
+                    />
                     <code>{item.objectId.slice(0, 10)}…</code>
                   </li>
                 {/each}
@@ -467,6 +531,13 @@
     color: #9a917e;
   }
 
+  h2 .sub {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    color: #6e6656;
+  }
+
   section p {
     margin: 0.25rem 0 0.75rem;
     font-size: 0.9rem;
@@ -487,6 +558,11 @@
     cursor: pointer;
   }
 
+  button.secondary {
+    background: #2d3446;
+    color: #e8e0d0;
+  }
+
   button:disabled {
     opacity: 0.5;
     cursor: not-allowed;
@@ -498,16 +574,35 @@
     padding: 0;
   }
 
+  .inventory {
+    margin-bottom: 0.6rem;
+  }
+
   .inventory li {
     display: flex;
-    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
     padding-block: 0.2rem;
     font-size: 0.95rem;
   }
 
+  .inventory li strong {
+    margin-left: auto;
+  }
+
+  .inventory img,
+  .equipment img {
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+  }
+
   .equipment li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     font-size: 0.85rem;
-    padding-block: 0.15rem;
+    padding-block: 0.2rem;
   }
 
   .log ul {

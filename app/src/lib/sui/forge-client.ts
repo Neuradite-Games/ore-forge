@@ -1,20 +1,32 @@
 /**
  * Transaction builders and queries for the ore_forge package.
  *
+ * All gameplay transactions are signed by the session key, whose address is
+ * the tx sender: `coinWithBalance` therefore selects ORE/INGOT coins from the
+ * session pouch automatically, and mine's output lands there too. NFTs are
+ * delivered to the real wallet inside Move (`smith_*_and_keep`).
+ *
  * Events are parsed from BCS (not the `json` field) because the JSON shape
  * varies between API implementations.
  */
 import { bcs } from '@mysten/sui/bcs';
 import type { SuiGrpcClient } from '@mysten/sui/grpc';
-import { Transaction } from '@mysten/sui/transactions';
+import { coinWithBalance, Transaction } from '@mysten/sui/transactions';
 
-import { ORIGINAL_PACKAGE_ID, PACKAGE_ID, WORLD_ID } from './config';
+import {
+  ARMOUR_INGOT_COST,
+  FORGE_ID,
+  INGOT_TYPE,
+  ORE_TYPE,
+  ORIGINAL_PACKAGE_ID,
+  PACKAGE_ID,
+  SMELT_ORE_COST,
+  WEAPON_INGOT_COST,
+} from './config';
 
-export interface PlayerStats {
+export interface CoinBalances {
   ore: number;
   ingots: number;
-  weaponsSmithed: number;
-  armourSmithed: number;
 }
 
 export interface EquipmentItem {
@@ -22,35 +34,21 @@ export interface EquipmentItem {
   kind: 'weapon' | 'armour';
 }
 
-// === BCS schemas (field order mirrors the Move structs) ===
-
-const PlayerBcs = bcs.struct('Player', {
-  ore: bcs.u64(),
-  ingots: bcs.u64(),
-  weaponsSmithed: bcs.u64(),
-  armourSmithed: bcs.u64(),
-});
+// === BCS event schemas (field order mirrors the Move structs) ===
 
 export const OreMinedBcs = bcs.struct('OreMined', {
   player: bcs.Address,
   amount: bcs.u64(),
-  oreTotal: bcs.u64(),
 });
 
-export const IngotSmeltedBcs = bcs.struct('IngotSmelted', {
-  player: bcs.Address,
-  oreSpent: bcs.u64(),
-  ingotTotal: bcs.u64(),
-});
-
-// === Transaction builders (all session-signed; see session.ts) ===
+// === Transaction builders ===
 
 export function buildMineTx(capId: string): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PACKAGE_ID}::forge::mine`,
     arguments: [
-      tx.object(WORLD_ID),
+      tx.object(FORGE_ID),
       tx.object(capId),
       tx.object.random(),
       tx.object.clock(),
@@ -62,59 +60,74 @@ export function buildMineTx(capId: string): Transaction {
 export function buildSmeltTx(capId: string): Transaction {
   const tx = new Transaction();
   tx.moveCall({
-    target: `${PACKAGE_ID}::forge::smelt`,
-    arguments: [tx.object(WORLD_ID), tx.object(capId), tx.object.clock()],
+    target: `${PACKAGE_ID}::forge::smelt_and_keep`,
+    arguments: [
+      tx.object(FORGE_ID),
+      tx.object(capId),
+      coinWithBalance({ type: ORE_TYPE, balance: BigInt(SMELT_ORE_COST) }),
+      tx.object.clock(),
+    ],
   });
   return tx;
 }
 
-/**
- * Smithing is session-gated like everything else. The `_and_keep` variant
- * transfers the minted NFT to `cap.player()` INSIDE Move — delivery to the
- * real wallet is an on-chain guarantee, not a client-side transfer the
- * ephemeral signer could misdirect.
- */
 export function buildSmithTx(kind: 'weapon' | 'armour', capId: string): Transaction {
+  const cost = kind === 'weapon' ? WEAPON_INGOT_COST : ARMOUR_INGOT_COST;
   const tx = new Transaction();
   tx.moveCall({
     target: `${PACKAGE_ID}::forge::smith_${kind}_and_keep`,
-    arguments: [tx.object(WORLD_ID), tx.object(capId), tx.object.clock()],
+    arguments: [
+      tx.object(FORGE_ID),
+      tx.object(capId),
+      coinWithBalance({ type: INGOT_TYPE, balance: BigInt(cost) }),
+      tx.object.clock(),
+    ],
   });
   return tx;
 }
 
 // === Queries ===
 
-/**
- * Player state lives in a dynamic field on the shared World, keyed by
- * `forge::PlayerKey(address)` — a positional struct whose BCS is just the
- * address. Returns null when no player exists yet.
- */
-export async function fetchPlayerStats(
+/** ORE/INGOT balances for any address (real coins — same query wallets run). */
+export async function fetchBalances(
   client: SuiGrpcClient,
-  player: string,
-): Promise<PlayerStats | null> {
-  try {
-    const { dynamicField } = await client.core.getDynamicField({
-      parentId: WORLD_ID,
-      name: {
-        type: `${ORIGINAL_PACKAGE_ID}::forge::PlayerKey`,
-        bcs: bcs.Address.serialize(player).toBytes(),
-      },
-    });
-    const parsed = PlayerBcs.parse(dynamicField.value.bcs);
-    return {
-      ore: Number(parsed.ore),
-      ingots: Number(parsed.ingots),
-      weaponsSmithed: Number(parsed.weaponsSmithed),
-      armourSmithed: Number(parsed.armourSmithed),
-    };
-  } catch {
-    return null;
-  }
+  owner: string,
+): Promise<CoinBalances> {
+  const [ore, ingots] = await Promise.all([
+    client.core.getBalance({ owner, coinType: ORE_TYPE }),
+    client.core.getBalance({ owner, coinType: INGOT_TYPE }),
+  ]);
+  return {
+    ore: Number(ore.balance.balance),
+    ingots: Number(ingots.balance.balance),
+  };
 }
 
-/** All Weapon / Armour objects owned by the connected wallet. */
+/** Object ids of all ORE/INGOT coins an address holds (for sweeping). */
+export async function fetchCoinIds(
+  client: SuiGrpcClient,
+  owner: string,
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const coinType of [ORE_TYPE, INGOT_TYPE]) {
+    let cursor: string | null = null;
+    do {
+      const page: Awaited<ReturnType<typeof client.core.listCoins>> =
+        await client.core.listCoins({
+          owner,
+          coinType,
+          ...(cursor ? { cursor } : {}),
+        });
+      for (const coin of page.objects) {
+        ids.push(coin.objectId);
+      }
+      cursor = page.cursor ?? null;
+    } while (cursor);
+  }
+  return ids;
+}
+
+/** All Weapon / Armour NFTs owned by the connected wallet. */
 export async function fetchEquipment(
   client: SuiGrpcClient,
   owner: string,

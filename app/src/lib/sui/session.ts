@@ -17,7 +17,6 @@ import {
   SESSION_ACTIONS,
   SESSION_GAS_MIST,
   SESSION_TTL_MS,
-  WORLD_ID,
 } from './config';
 
 const KEY_STORAGE = 'ore-forge:session-key';
@@ -80,23 +79,14 @@ export function clearStoredSession() {
 }
 
 /**
- * THE one wallet-signed transaction of the whole game: optionally create the
- * player, mint a SessionCap to the ephemeral address, and split off a gas
- * allowance so the ephemeral key can pay for its own transactions. Everything
- * after this — mining, smelting, smithing NFTs — is signed silently.
+ * THE one wallet-signed transaction of the whole game: mint a SessionCap to
+ * the ephemeral address and split off a gas allowance so the ephemeral key
+ * can pay for its own transactions. Everything after this — mining, smelting,
+ * smithing NFTs — is signed silently.
  * (Sponsored transactions would replace the allowance in a production build.)
  */
-export function buildStartSessionTx(
-  sessionAddress: string,
-  createPlayer: boolean,
-): Transaction {
+export function buildStartSessionTx(sessionAddress: string): Transaction {
   const tx = new Transaction();
-  if (createPlayer) {
-    tx.moveCall({
-      target: `${PACKAGE_ID}::forge::create_player`,
-      arguments: [tx.object(WORLD_ID)],
-    });
-  }
   tx.moveCall({
     target: `${PACKAGE_ID}::session::mint`,
     arguments: [
@@ -155,15 +145,34 @@ export async function executeAsSession(
 }
 
 /**
- * Revoke the cap and sweep the remaining gas allowance back to the player —
- * one PTB signed by the ephemeral key.
+ * Send pouch coins (session-held ORE/INGOT) home to the real wallet — signed
+ * by the ephemeral key, so it costs zero popups.
  */
-export function buildEndSessionTx(session: SessionInfo): Transaction {
+export function buildSweepTx(session: SessionInfo, coinIds: string[]): Transaction {
+  const tx = new Transaction();
+  tx.transferObjects(
+    coinIds.map((id) => tx.object(id)),
+    tx.pure.address(session.player),
+  );
+  return tx;
+}
+
+/**
+ * Revoke the cap and sweep everything — pouch coins and the remaining gas
+ * allowance — back to the player, in one PTB signed by the ephemeral key.
+ */
+export function buildEndSessionTx(
+  session: SessionInfo,
+  coinIds: string[],
+): Transaction {
   const tx = new Transaction();
   tx.moveCall({
     target: `${PACKAGE_ID}::session::revoke`,
     arguments: [tx.object(session.capId)],
   });
-  tx.transferObjects([tx.gas], tx.pure.address(session.player));
+  tx.transferObjects(
+    [...coinIds.map((id) => tx.object(id)), tx.gas],
+    tx.pure.address(session.player),
+  );
   return tx;
 }

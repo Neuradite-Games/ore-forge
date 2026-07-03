@@ -1,30 +1,31 @@
-/// Ore Forge core loop: mine ore → smelt ingots at the furnace → smith
-/// weapons and armour at the anvil.
+/// Ore Forge core loop: mine ORE coins → smelt INGOT coins at the furnace →
+/// smith Weapon/Armour NFTs at the anvil.
 ///
-/// Architecture (see docs/sui-reference.md §6):
-/// - `World` is a shared object; per-player state lives in dynamic fields on
-///   it keyed by address, so a session key can act on a player's behalf
-///   (an address-owned Player object could only be touched by txs signed by
-///   the real wallet).
-/// - EVERY gameplay verb (`mine`, `smelt`, `smith_*`) is session-gated: one
-///   wallet signature mints the SessionCap, then the ephemeral key signs the
-///   whole session — including minting Weapon/Armour NFTs (they are always
-///   delivered to the cap's `player`, never to the ephemeral key). A
-///   production build would keep minting behind the real wallet (the
-///   "tier split"); this prototype deliberately session-gates it to test
-///   sign-once-play-forever.
-/// - `mine` consumes on-chain randomness, so it must be a non-public `entry`
-///   function (the framework blocks test-and-abort bias attacks).
+/// There is no world/registry object — player state IS the player's assets:
+/// ORE and INGOT are real fungible coins, gear is real `key, store` NFTs with
+/// Object Display. The only shared object is the minimal `Forge`, which holds
+/// the two treasury caps so any transaction can mint/burn.
+///
+/// Session-key flow (see session.move): the ephemeral key signs everything.
+/// Because spending an owned coin requires its owner's signature, working
+/// materials (ORE/INGOT) are minted to the session address — a real wallet
+/// the session key controls — and swept to the player's main wallet on
+/// demand or at session end. NFTs skip the pouch entirely: `*_and_keep`
+/// delivers them to `cap.player()` inside Move.
+///
+/// `mine` consumes on-chain randomness, so it must be a non-public `entry`
+/// function (the framework blocks test-and-abort bias attacks).
 module ore_forge::forge;
 
+use ore_forge::ingot::INGOT;
+use ore_forge::ore::ORE;
 use ore_forge::session::SessionCap;
 use sui::clock::Clock;
-use sui::dynamic_field as df;
+use sui::coin::{Coin, TreasuryCap};
+use sui::display;
 use sui::event;
+use sui::package;
 use sui::random::Random;
-
-/// Bump on incompatible World changes; ship a `migrate` in the upgrade.
-const VERSION: u64 = 1;
 
 /// Mining yields 1..=MAX_ORE_PER_MINE per swing.
 const MAX_ORE_PER_MINE: u64 = 3;
@@ -34,41 +35,29 @@ const SMELT_ORE_COST: u64 = 3;
 const WEAPON_INGOT_COST: u64 = 2;
 const ARMOUR_INGOT_COST: u64 = 3;
 
-#[error]
-const EWrongVersion: vector<u8> = b"World version does not match this package";
-#[error]
-const EPlayerAlreadyExists: vector<u8> = b"Player already exists for this address";
-#[error]
-const ENoPlayer: vector<u8> = b"No player for this address; call create_player first";
-#[error]
-const ENotEnoughOre: vector<u8> = b"Not enough ore to smelt an ingot";
-#[error]
-const ENotEnoughIngots: vector<u8> = b"Not enough ingots to smith this item";
-#[error]
-const EAlreadyMigrated: vector<u8> = b"World is already at the current version";
+/// Update after re-hosting the images (e.g. Walrus); wallets need public URLs.
+const WEAPON_IMAGE_URL: vector<u8> =
+    b"https://raw.githubusercontent.com/Neuradite-Games/ore-forge/main/app/static/items/sword.svg";
+const ARMOUR_IMAGE_URL: vector<u8> =
+    b"https://raw.githubusercontent.com/Neuradite-Games/ore-forge/main/app/static/items/armour.svg";
 
-public struct World has key {
+#[error]
+const EWrongOreAmount: vector<u8> = b"Smelting takes exactly 3 ore";
+#[error]
+const EWrongIngotAmount: vector<u8> = b"Wrong ingot amount for this recipe";
+
+/// One-time witness — claims the Publisher for Object Display.
+public struct FORGE has drop {}
+
+/// Minimal shared mint authority. Not a world: no player registry, no
+/// per-player state — just the treasuries the recipes need.
+public struct Forge has key {
     id: UID,
-    version: u64,
-    players: u64,
+    ore_treasury: TreasuryCap<ORE>,
+    ingot_treasury: TreasuryCap<INGOT>,
 }
 
-public struct AdminCap has key, store {
-    id: UID,
-}
-
-/// Dynamic-field key for a player's state on the World.
-public struct PlayerKey(address) has copy, drop, store;
-
-/// Not an object — lives in a dynamic field on the World.
-public struct Player has store {
-    ore: u64,
-    ingots: u64,
-    weapons_smithed: u64,
-    armour_smithed: u64,
-}
-
-/// Tradable gear: `key, store` so it composes with Kiosk / marketplaces.
+/// Tradable gear: `key, store` NFTs rendered by wallets via Display.
 public struct Weapon has key, store {
     id: UID,
     ingots_used: u64,
@@ -81,20 +70,14 @@ public struct Armour has key, store {
 
 // === Events ===
 
-public struct PlayerCreated has copy, drop {
-    player: address,
-}
-
 public struct OreMined has copy, drop {
     player: address,
     amount: u64,
-    ore_total: u64,
 }
 
 public struct IngotSmelted has copy, drop {
     player: address,
     ore_spent: u64,
-    ingot_total: u64,
 }
 
 public struct WeaponSmithed has copy, drop {
@@ -107,184 +90,187 @@ public struct ArmourSmithed has copy, drop {
     armour_id: ID,
 }
 
-fun init(ctx: &mut TxContext) {
-    transfer::share_object(World {
-        id: object::new(ctx),
-        version: VERSION,
-        players: 0,
-    });
-    transfer::public_transfer(AdminCap { id: object::new(ctx) }, ctx.sender());
-}
+/// Claims the Publisher and registers Display templates so wallets and
+/// explorers render the NFTs with names and images.
+fun init(otw: FORGE, ctx: &mut TxContext) {
+    let publisher = package::claim(otw, ctx);
 
-// === Player lifecycle (real wallet) ===
-
-public fun create_player(world: &mut World, ctx: &mut TxContext) {
-    world.assert_version();
-    let player = ctx.sender();
-    assert!(!df::exists(&world.id, PlayerKey(player)), EPlayerAlreadyExists);
-    df::add(
-        &mut world.id,
-        PlayerKey(player),
-        Player { ore: 0, ingots: 0, weapons_smithed: 0, armour_smithed: 0 },
+    let mut weapon_display = display::new_with_fields<Weapon>(
+        &publisher,
+        vector[b"name".to_string(), b"description".to_string(), b"image_url".to_string()],
+        vector[
+            b"Ore Forge Sword".to_string(),
+            b"Smithed from {ingots_used} ingots at the Ore Forge anvil.".to_string(),
+            WEAPON_IMAGE_URL.to_string(),
+        ],
+        ctx,
     );
-    world.players = world.players + 1;
-    event::emit(PlayerCreated { player });
+    weapon_display.update_version();
+
+    let mut armour_display = display::new_with_fields<Armour>(
+        &publisher,
+        vector[b"name".to_string(), b"description".to_string(), b"image_url".to_string()],
+        vector[
+            b"Ore Forge Armour".to_string(),
+            b"Smithed from {ingots_used} ingots at the Ore Forge anvil.".to_string(),
+            ARMOUR_IMAGE_URL.to_string(),
+        ],
+        ctx,
+    );
+    armour_display.update_version();
+
+    transfer::public_transfer(weapon_display, ctx.sender());
+    transfer::public_transfer(armour_display, ctx.sender());
+    transfer::public_transfer(publisher, ctx.sender());
 }
 
-// === Session-gated verbs (signed silently by the ephemeral key) ===
+/// One-time post-publish setup: lock both treasuries into the shared Forge.
+/// (Two currencies need two one-time witnesses, so the caps are minted in
+/// ore.move / ingot.move inits and combined here by the publisher.)
+public fun create_forge(
+    ore_treasury: TreasuryCap<ORE>,
+    ingot_treasury: TreasuryCap<INGOT>,
+    ctx: &mut TxContext,
+) {
+    transfer::share_object(Forge {
+        id: object::new(ctx),
+        ore_treasury,
+        ingot_treasury,
+    });
+}
 
-/// Swing at an ore node; yields 1..=3 ore. Non-public `entry` is mandatory:
-/// this consumes `Random` at 0x8.
+// === Gameplay (all session-signed; ctx.sender() is the session address) ===
+
+/// Swing at an ore node: mints 1..=3 ORE to the session pouch. Non-public
+/// `entry` is mandatory — this consumes `Random` at 0x8.
 entry fun mine(
-    world: &mut World,
+    forge: &mut Forge,
     cap: &mut SessionCap,
     r: &Random,
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    world.assert_version();
     cap.consume_action(clock);
     let mut gen = r.new_generator(ctx);
     let amount = gen.generate_u64_in_range(1, MAX_ORE_PER_MINE);
-    let player = cap.player();
-    let state = world.player_mut(player);
-    state.ore = state.ore + amount;
-    event::emit(OreMined { player, amount, ore_total: state.ore });
+    let ore = forge.ore_treasury.mint(amount, ctx);
+    transfer::public_transfer(ore, ctx.sender());
+    event::emit(OreMined { player: cap.player(), amount });
 }
 
-/// Furnace: smelt `SMELT_ORE_COST` ore into one ingot.
-public fun smelt(world: &mut World, cap: &mut SessionCap, clock: &Clock) {
-    world.assert_version();
-    cap.consume_action(clock);
-    let player = cap.player();
-    let state = world.player_mut(player);
-    assert!(state.ore >= SMELT_ORE_COST, ENotEnoughOre);
-    state.ore = state.ore - SMELT_ORE_COST;
-    state.ingots = state.ingots + 1;
-    event::emit(IngotSmelted {
-        player,
-        ore_spent: SMELT_ORE_COST,
-        ingot_total: state.ingots,
-    });
-}
-
-// === Anvil: smithing (session-gated, mints NFTs to the cap's player) ===
-
-/// Returns the Weapon; the calling PTB decides where it goes (normally a
-/// transfer to `cap.player()` — the ephemeral signer never keeps assets).
-public fun smith_weapon(
-    world: &mut World,
+/// Furnace: burn exactly 3 ORE, get one INGOT back.
+public fun smelt(
+    forge: &mut Forge,
     cap: &mut SessionCap,
+    ore: Coin<ORE>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): Coin<INGOT> {
+    cap.consume_action(clock);
+    assert!(ore.value() == SMELT_ORE_COST, EWrongOreAmount);
+    forge.ore_treasury.burn(ore);
+    event::emit(IngotSmelted { player: cap.player(), ore_spent: SMELT_ORE_COST });
+    forge.ingot_treasury.mint(1, ctx)
+}
+
+entry fun smelt_and_keep(
+    forge: &mut Forge,
+    cap: &mut SessionCap,
+    ore: Coin<ORE>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let ingot = smelt(forge, cap, ore, clock, ctx);
+    transfer::public_transfer(ingot, ctx.sender());
+}
+
+// === Anvil: smithing burns INGOT coins and mints NFTs ===
+
+/// Returns the Weapon; the calling PTB decides where it goes.
+public fun smith_weapon(
+    forge: &mut Forge,
+    cap: &mut SessionCap,
+    ingots: Coin<INGOT>,
     clock: &Clock,
     ctx: &mut TxContext,
 ): Weapon {
-    world.assert_version();
     cap.consume_action(clock);
-    let player = cap.player();
-    let state = world.player_mut(player);
-    assert!(state.ingots >= WEAPON_INGOT_COST, ENotEnoughIngots);
-    state.ingots = state.ingots - WEAPON_INGOT_COST;
-    state.weapons_smithed = state.weapons_smithed + 1;
+    assert!(ingots.value() == WEAPON_INGOT_COST, EWrongIngotAmount);
+    forge.ingot_treasury.burn(ingots);
     let weapon = Weapon { id: object::new(ctx), ingots_used: WEAPON_INGOT_COST };
-    event::emit(WeaponSmithed { player, weapon_id: weapon.id.to_inner() });
+    event::emit(WeaponSmithed { player: cap.player(), weapon_id: weapon.id.to_inner() });
     weapon
 }
 
 public fun smith_armour(
-    world: &mut World,
+    forge: &mut Forge,
     cap: &mut SessionCap,
+    ingots: Coin<INGOT>,
     clock: &Clock,
     ctx: &mut TxContext,
 ): Armour {
-    world.assert_version();
     cap.consume_action(clock);
-    let player = cap.player();
-    let state = world.player_mut(player);
-    assert!(state.ingots >= ARMOUR_INGOT_COST, ENotEnoughIngots);
-    state.ingots = state.ingots - ARMOUR_INGOT_COST;
-    state.armour_smithed = state.armour_smithed + 1;
+    assert!(ingots.value() == ARMOUR_INGOT_COST, EWrongIngotAmount);
+    forge.ingot_treasury.burn(ingots);
     let armour = Armour { id: object::new(ctx), ingots_used: ARMOUR_INGOT_COST };
-    event::emit(ArmourSmithed { player, armour_id: armour.id.to_inner() });
+    event::emit(ArmourSmithed { player: cap.player(), armour_id: armour.id.to_inner() });
     armour
 }
 
-/// The frontend calls these wrappers rather than the public functions:
-/// delivery to `cap.player()` happens inside Move, so no client can
-/// misdirect a minted NFT to the ephemeral signer (or anywhere else).
+/// The frontend calls these wrappers: delivery to `cap.player()` happens
+/// inside Move, so the NFT lands in the REAL wallet in the same
+/// session-signed transaction — no client can misdirect it.
 entry fun smith_weapon_and_keep(
-    world: &mut World,
+    forge: &mut Forge,
     cap: &mut SessionCap,
+    ingots: Coin<INGOT>,
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    let weapon = smith_weapon(world, cap, clock, ctx);
+    let weapon = smith_weapon(forge, cap, ingots, clock, ctx);
     transfer::public_transfer(weapon, cap.player());
 }
 
 entry fun smith_armour_and_keep(
-    world: &mut World,
+    forge: &mut Forge,
     cap: &mut SessionCap,
+    ingots: Coin<INGOT>,
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    let armour = smith_armour(world, cap, clock, ctx);
+    let armour = smith_armour(forge, cap, ingots, clock, ctx);
     transfer::public_transfer(armour, cap.player());
-}
-
-// === Views (read via simulateTransaction, or fetch the dynamic field) ===
-
-public fun has_player(world: &World, player: address): bool {
-    df::exists(&world.id, PlayerKey(player))
-}
-
-/// (ore, ingots, weapons_smithed, armour_smithed)
-public fun player_stats(world: &World, player: address): (u64, u64, u64, u64) {
-    assert!(df::exists(&world.id, PlayerKey(player)), ENoPlayer);
-    let state: &Player = df::borrow(&world.id, PlayerKey(player));
-    (state.ore, state.ingots, state.weapons_smithed, state.armour_smithed)
-}
-
-// === Admin ===
-
-/// Forward-fix hook: bump a lagging shared World after a package upgrade.
-public fun migrate(_: &AdminCap, world: &mut World) {
-    assert!(world.version < VERSION, EAlreadyMigrated);
-    world.version = VERSION;
-}
-
-// === Internals ===
-
-fun assert_version(world: &World) {
-    assert!(world.version == VERSION, EWrongVersion);
-}
-
-fun player_mut(world: &mut World, player: address): &mut Player {
-    assert!(df::exists(&world.id, PlayerKey(player)), ENoPlayer);
-    df::borrow_mut(&mut world.id, PlayerKey(player))
 }
 
 // === Test hooks ===
 
-#[test_only]
-public fun init_for_testing(ctx: &mut TxContext) {
-    init(ctx);
-}
-
 /// `mine` is untestable from a `_tests` module (non-public entry), so give
-/// tests a same-module wrapper and a deterministic ore faucet.
+/// tests a same-module wrapper plus deterministic coin faucets.
 #[test_only]
 public fun mine_for_testing(
-    world: &mut World,
+    forge: &mut Forge,
     cap: &mut SessionCap,
     r: &Random,
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    mine(world, cap, r, clock, ctx);
+    mine(forge, cap, r, clock, ctx);
 }
 
 #[test_only]
-public fun add_ore_for_testing(world: &mut World, player: address, amount: u64) {
-    let state = world.player_mut(player);
-    state.ore = state.ore + amount;
+public fun mint_ore_for_testing(
+    forge: &mut Forge,
+    amount: u64,
+    ctx: &mut TxContext,
+): Coin<ORE> {
+    forge.ore_treasury.mint(amount, ctx)
+}
+
+#[test_only]
+public fun mint_ingots_for_testing(
+    forge: &mut Forge,
+    amount: u64,
+    ctx: &mut TxContext,
+): Coin<INGOT> {
+    forge.ingot_treasury.mint(amount, ctx)
 }

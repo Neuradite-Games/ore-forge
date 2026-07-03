@@ -5,7 +5,7 @@ into ingots at the furnace, smith ingots into swords and armour at the anvil —
 every action is a Sui transaction, and mining/smelting run **without wallet
 popups** via a hand-rolled session-key pattern (`SessionCap`).
 
-- **Contracts**: Move 2024 — `move/ore_forge/`
+- **Contracts**: Move 2024 — `move/ore_forge/` (ORE/INGOT coins, NFT gear, session caps)
 - **Client**: SvelteKit + Phaser + `@builders-of-stuff/svelte-sui-wallet-adapter` — `app/`
 
 See **[PROJECT.md](./PROJECT.md)** for the architecture, milestones, current
