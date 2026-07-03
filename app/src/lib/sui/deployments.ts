@@ -20,8 +20,9 @@ export interface Deployment {
   /** Display<Weapon> / Display<Armour> — edit these to change NFT metadata. */
   weaponDisplay: string;
   armourDisplay: string;
-  /** Treasury caps now live INSIDE the shared Forge (create_forge consumed
-   * them); ids kept for the historical record. */
+  /** Treasury caps are WRAPPED inside the shared Forge since create_forge
+   * (they show as Deleted on explorers — that's wrapping, not loss); ids
+   * kept for the historical record. */
   oreTreasuryCap: string;
   ingotTreasuryCap: string;
   /** Frozen coin metadata objects (symbol/icon). */
@@ -36,8 +37,8 @@ export const DEPLOYMENTS: Partial<Record<string, Deployment>> = {
     packageId: '0x8a50310151ca116cc59dfd36b46d2367df854b932d0d5568b5ff6aa4a4bc2006',
     originalPackageId:
       '0x8a50310151ca116cc59dfd36b46d2367df854b932d0d5568b5ff6aa4a4bc2006',
-    // TODO: fill in after running forge::create_forge (see PROJECT.md step 3).
-    forgeId: '',
+    // Created by forge::create_forge, digest 2kRUaGWjQ2zcpbXm6JVT536SZYBLYp7xcfYxMppDZcEC
+    forgeId: '0xf736d18cdb593d5074b1394e68f1639185245f0b7296d51e3b3c6bfb70a9e3d3',
     upgradeCap: '0x015bd6218929a667c2a7eaad1a4b274ddc844af232bc3165b596689d61436aa6',
     publisher: '0x72d6eb9924e8c3170db1a8ab8c65556e869bf915ebb85a3f5255b08b014d7bfd',
     weaponDisplay:

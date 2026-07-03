@@ -135,8 +135,10 @@ every smelt would need a wallet popup again. So:
 - **2026-07-03 (night)** — Repo made public (image URLs live). **PUBLISHED to
   testnet** (digest `3K34NTBx5vxHthuVy16aLQ4FRfs3xcGS8Ay3X8Csiars`). All ids
   recorded in `app/src/lib/sui/deployments.ts` — the committed source of truth
-  (config.ts falls back to it, .env is gitignored). Remaining: `create_forge`
-  call + fill `forgeId`, then the M4 verify flow.
+  (config.ts falls back to it, .env is gitignored). `create_forge` executed
+  (digest `2kRUaGWjQ2zcpbXm6JVT536SZYBLYp7xcfYxMppDZcEC`) — treasuries wrapped
+  into the shared Forge. **Fully deployed; remaining: the M4 verify flow
+  (play the game end-to-end).**
 
 ## Testnet deployment record (2026-07-03)
 
@@ -153,7 +155,7 @@ Canonical copy lives in `app/src/lib/sui/deployments.ts`. Key ids:
 | TreasuryCap\<INGOT\> | `0x52fe2b78a000a8d5c4f79289bc319537b6cb69643c71a259d3ada41511c609a8` |
 | CoinMetadata\<ORE\> (frozen) | `0xc7c28b3411da1a57adec141f733b52cf5f92dbdbd08806bf14d58832b8057748` |
 | CoinMetadata\<INGOT\> (frozen) | `0x0622c58beae7fcecf8e6f27f4cb210796f447d00ec0026273b496d82acc2670c` |
-| Forge (shared) | _pending `create_forge`_ |
+| **Forge (shared)** | `0xf736d18cdb593d5074b1394e68f1639185245f0b7296d51e3b3c6bfb70a9e3d3` |
 | Publisher address | `0xe8468f320cf248052e931b3d0214e3f48049e86e28882b58579406cca7a51e86` |
 
 ## Deploy instructions (manual — do this to reach M4)
