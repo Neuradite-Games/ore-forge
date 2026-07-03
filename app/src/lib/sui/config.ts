@@ -1,21 +1,34 @@
 import { env } from '$env/dynamic/public';
 
+import { DEPLOYMENTS } from './deployments';
+
 export type SuiNetwork = 'mainnet' | 'testnet' | 'devnet' | 'localnet';
 
 export const NETWORK = (env.PUBLIC_SUI_NETWORK ?? 'testnet') as SuiNetwork;
 
+const deployment = DEPLOYMENTS[NETWORK];
+
+/** Env var wins when set to a real id; otherwise the committed deployment. */
+function resolveId(envValue: string | undefined, fallback: string | undefined): string {
+  if (envValue && envValue !== '0x0') return envValue;
+  return fallback || '0x0';
+}
+
 /** moveCall targets — always the LATEST package id. */
-export const PACKAGE_ID = env.PUBLIC_PACKAGE_ID ?? '0x0';
+export const PACKAGE_ID = resolveId(env.PUBLIC_PACKAGE_ID, deployment?.packageId);
 
 /**
  * Type queries and event filters — always the ORIGINAL package id (struct
  * types stay anchored to the first published package across upgrades).
  * Same as PACKAGE_ID until the first upgrade.
  */
-export const ORIGINAL_PACKAGE_ID = env.PUBLIC_ORIGINAL_PACKAGE_ID || PACKAGE_ID;
+export const ORIGINAL_PACKAGE_ID = resolveId(
+  env.PUBLIC_ORIGINAL_PACKAGE_ID,
+  deployment?.originalPackageId || PACKAGE_ID,
+);
 
 /** The shared Forge (mint authority) created by forge::create_forge. */
-export const FORGE_ID = env.PUBLIC_FORGE_ID ?? '0x0';
+export const FORGE_ID = resolveId(env.PUBLIC_FORGE_ID, deployment?.forgeId);
 
 export const isConfigured = PACKAGE_ID !== '0x0' && FORGE_ID !== '0x0';
 
