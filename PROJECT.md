@@ -107,11 +107,13 @@ every smelt would need a wallet popup again. So:
       areas, wallet connect, HUD (pouch/wallet inventory, session panel, log)
 - [x] **M3 — Chain wiring**: start/end session, mine, smelt, smith, collect —
       all built and type-checked (`pnpm check`, `pnpm build` green)
-- [ ] **M4 — Deploy & end-to-end test on testnet** ← YOU ARE HERE (manual
-      steps below — note the extra `create_forge` call and the image-hosting
-      decision)
-- [ ] **M5 — Polish (optional)**: sounds, better art, optimistic clicks with
-      rollback, auto-collect cadence, top-up session gas button
+- [x] **M4 — Deploy & end-to-end test on testnet** — VERIFIED 2026-07-03: two
+      full sessions played (mine → smelt → smith → sweep), all assets
+      confirmed on-chain in the player's main wallet, session address left
+      empty
+- [ ] **M5 — Polish (optional)** ← YOU ARE HERE: sounds, better art,
+      optimistic clicks with rollback, auto-collect cadence, top-up session
+      gas button
 - [ ] **M6 — Later ideas**: sponsored txs (drop the gas allowance), Kiosk +
       TransferPolicy for trading gear, ore types/tiers, leaderboard via custom
       indexer, migrate to `coin_registry`
@@ -137,8 +139,15 @@ every smelt would need a wallet popup again. So:
   recorded in `app/src/lib/sui/deployments.ts` — the committed source of truth
   (config.ts falls back to it, .env is gitignored). `create_forge` executed
   (digest `2kRUaGWjQ2zcpbXm6JVT536SZYBLYp7xcfYxMppDZcEC`) — treasuries wrapped
-  into the shared Forge. **Fully deployed; remaining: the M4 verify flow
-  (play the game end-to-end).**
+  into the shared Forge. **Fully deployed.**
+- **2026-07-03 (late night)** — **M4 verified end-to-end on testnet.** Player
+  `0xec6bc4…dfc23` ran two full sessions: one wallet signature each, then
+  mining/smelting/smithing all popup-free. Final on-chain state: 13 ORE +
+  1 INGOT (coins) + 1 Weapon + 1 Armour (NFTs) in the main wallet; session
+  address swept completely clean (coins, caps, gas). Gotcha discovered:
+  wallets hide unverified coins in an "unrecognized tokens" section and NFTs
+  live under the Assets tab — the assets were "invisible" but present. The
+  session-key experiment works.
 
 ## Testnet deployment record (2026-07-03)
 
