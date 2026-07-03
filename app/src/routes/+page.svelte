@@ -15,7 +15,6 @@
     WEAPON_INGOT_COST,
   } from '$lib/sui/config';
   import {
-    buildCreatePlayerTx,
     buildMineTx,
     buildSmeltTx,
     buildSmithTx,
@@ -81,7 +80,7 @@
     return confirmed.Transaction?.events ?? [];
   }
 
-  function guard(action: string): boolean {
+  function guard(): boolean {
     if (!isConfigured) {
       addLog('Contracts not configured — see PROJECT.md');
       return false;
@@ -91,36 +90,25 @@
       return false;
     }
     if (gameState.pending) return false; // one tx at a time (owned objects)
-    if (action !== 'create-player' && !gameState.hasPlayer) {
-      addLog('Create your player first');
-      return false;
-    }
     return true;
   }
 
-  async function createPlayer() {
-    if (!guard('create-player')) return;
-    gameState.pending = 'create-player';
-    try {
-      await signWithWallet(buildCreatePlayerTx());
-      gameState.hasPlayer = true;
-      addLog('Player created — welcome to the forge!');
-    } catch (error) {
-      addLog(`Create player failed: ${(error as Error).message}`);
-    } finally {
-      gameState.pending = null;
-    }
-  }
-
+  /**
+   * The only wallet popup in the game: creates the player (if needed), mints
+   * the SessionCap, and funds the ephemeral key — one signature.
+   */
   async function startSession() {
-    if (!guard('start-session')) return;
+    if (!guard()) return;
     gameState.pending = 'start-session';
     try {
       const keypair = loadEphemeralKeypair();
-      const events = await signWithWallet(buildStartSessionTx(keypair.toSuiAddress()));
+      const events = await signWithWallet(
+        buildStartSessionTx(keypair.toSuiAddress(), !gameState.hasPlayer),
+      );
       const session = parseSessionMinted(events);
       if (!session) throw new Error('SessionMinted event not found');
       saveSession(session);
+      gameState.hasPlayer = true;
       gameState.session = session;
       addLog(`Session started: ${session.actionsLeft} actions, no more popups ⚡`);
     } catch (error) {
@@ -172,7 +160,7 @@
   }
 
   async function mine(nodeId: number) {
-    if (!guard('mine') || !sessionValid()) {
+    if (!guard() || !sessionValid()) {
       gameEvents.emit('mine-failed', { nodeId });
       return;
     }
@@ -201,7 +189,7 @@
   }
 
   async function smelt() {
-    if (!guard('smelt') || !sessionValid()) {
+    if (!guard() || !sessionValid()) {
       gameEvents.emit('smelt-failed');
       return;
     }
@@ -236,7 +224,7 @@
   }
 
   async function smith(kind: 'weapon' | 'armour') {
-    if (!guard('smith')) {
+    if (!guard() || !sessionValid()) {
       gameEvents.emit('smith-failed', { kind });
       return;
     }
@@ -249,8 +237,13 @@
     gameState.pending = `smith-${kind}`;
     gameEvents.emit('busy', { busy: true });
     try {
-      // Smithing mints a tradable asset — the real wallet signs (tier split).
-      await signWithWallet(buildSmithTx(kind, address!));
+      // Session-signed mint: the NFT lands in the real wallet, no popup.
+      await executeAsSession(
+        client,
+        loadEphemeralKeypair(),
+        buildSmithTx(kind, gameState.session!.capId, address!),
+      );
+      spendSessionAction();
       gameState.ingots -= cost;
       if (kind === 'weapon') gameState.weaponsSmithed += 1;
       else gameState.armourSmithed += 1;
@@ -316,14 +309,6 @@
           <h2>Welcome</h2>
           <p>Connect a wallet to start mining on {NETWORK}.</p>
         </section>
-      {:else if !gameState.hasPlayer}
-        <section>
-          <h2>Player</h2>
-          <p>No player yet for this wallet.</p>
-          <button onclick={createPlayer} disabled={gameState.pending !== null}>
-            Create player
-          </button>
-        </section>
       {:else}
         <section>
           <h2>Session</h2>
@@ -337,8 +322,8 @@
             </button>
           {:else}
             <p>
-              One wallet signature mints a session key — then mining and smelting run
-              without popups.
+              Sign <strong>once</strong> to start a session — then everything (mining, smelting,
+              smithing NFTs) runs with zero popups.
             </p>
             <button onclick={startSession} disabled={gameState.pending !== null}>
               Start session

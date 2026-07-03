@@ -39,7 +39,8 @@ fun full_loop_smelts_and_smiths() {
     forge::add_ore_for_testing(&mut world, PLAYER, 7);
     ts::return_shared(world);
 
-    // The ephemeral session key smelts twice: 7 ore -> 1 ore + 2 ingots.
+    // The ephemeral session key does everything without the real wallet:
+    // smelts twice (7 ore -> 1 ore + 2 ingots), then smiths a weapon NFT.
     scenario.next_tx(SESSION_ADDRESS);
     let mut world = scenario.take_shared<World>();
     let mut cap = scenario.take_from_sender<SessionCap>();
@@ -49,20 +50,21 @@ fun full_loop_smelts_and_smiths() {
     let (ore, ingots, _, _) = forge::player_stats(&world, PLAYER);
     assert_eq!(ore, 1);
     assert_eq!(ingots, 2);
-    assert_eq!(cap.actions_left(), 8);
+    let weapon = forge::smith_weapon(&mut world, &mut cap, &clock, scenario.ctx());
+    let (_, ingots, weapons, _) = forge::player_stats(&world, PLAYER);
+    assert_eq!(ingots, 0);
+    assert_eq!(weapons, 1);
+    assert_eq!(cap.actions_left(), 7);
+    // The NFT goes to the real player, never to the ephemeral signer.
+    transfer::public_transfer(weapon, cap.player());
     scenario.return_to_sender(cap);
     ts::return_shared(world);
     clock.destroy_for_testing();
 
-    // The real wallet smiths a weapon: 2 ingots -> 0.
+    // Verify the weapon landed in the player's wallet.
     scenario.next_tx(PLAYER);
-    let mut world = scenario.take_shared<World>();
-    let weapon = forge::smith_weapon(&mut world, scenario.ctx());
-    let (_, ingots, weapons, _) = forge::player_stats(&world, PLAYER);
-    assert_eq!(ingots, 0);
-    assert_eq!(weapons, 1);
-    transfer::public_transfer(weapon, PLAYER);
-    ts::return_shared(world);
+    let weapon = scenario.take_from_sender<forge::Weapon>();
+    scenario.return_to_sender(weapon);
 
     scenario.end();
 }
@@ -107,9 +109,11 @@ fun smelt_aborts_without_enough_ore() {
 fun smith_aborts_without_enough_ingots() {
     let mut scenario = setup(HOUR_MS, 10);
 
-    scenario.next_tx(PLAYER);
+    scenario.next_tx(SESSION_ADDRESS);
     let mut world = scenario.take_shared<World>();
-    let weapon = forge::smith_weapon(&mut world, scenario.ctx());
+    let mut cap = scenario.take_from_sender<SessionCap>();
+    let clock = clock::create_for_testing(scenario.ctx());
+    let weapon = forge::smith_weapon(&mut world, &mut cap, &clock, scenario.ctx());
     transfer::public_transfer(weapon, PLAYER);
     abort
 }

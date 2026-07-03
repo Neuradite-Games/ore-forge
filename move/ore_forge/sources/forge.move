@@ -6,10 +6,13 @@
 ///   it keyed by address, so a session key can act on a player's behalf
 ///   (an address-owned Player object could only be touched by txs signed by
 ///   the real wallet).
-/// - Session-gated verbs (`mine`, `smelt`) are non-extractive: they only
-///   mutate counters inside the World. Smithing mints tradable `key, store`
-///   objects, so it demands the real wallet's signature — the tier split is
-///   the security boundary.
+/// - EVERY gameplay verb (`mine`, `smelt`, `smith_*`) is session-gated: one
+///   wallet signature mints the SessionCap, then the ephemeral key signs the
+///   whole session — including minting Weapon/Armour NFTs (they are always
+///   delivered to the cap's `player`, never to the ephemeral key). A
+///   production build would keep minting behind the real wallet (the
+///   "tier split"); this prototype deliberately session-gates it to test
+///   sign-once-play-forever.
 /// - `mine` consumes on-chain randomness, so it must be a non-public `entry`
 ///   function (the framework blocks test-and-abort bias attacks).
 module ore_forge::forge;
@@ -165,12 +168,19 @@ public fun smelt(world: &mut World, cap: &mut SessionCap, clock: &Clock) {
     });
 }
 
-// === Anvil: smithing (real wallet — mints tradable assets) ===
+// === Anvil: smithing (session-gated, mints NFTs to the cap's player) ===
 
-/// Returns the Weapon; the calling PTB decides where it goes.
-public fun smith_weapon(world: &mut World, ctx: &mut TxContext): Weapon {
+/// Returns the Weapon; the calling PTB decides where it goes (normally a
+/// transfer to `cap.player()` — the ephemeral signer never keeps assets).
+public fun smith_weapon(
+    world: &mut World,
+    cap: &mut SessionCap,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): Weapon {
     world.assert_version();
-    let player = ctx.sender();
+    cap.consume_action(clock);
+    let player = cap.player();
     let state = world.player_mut(player);
     assert!(state.ingots >= WEAPON_INGOT_COST, ENotEnoughIngots);
     state.ingots = state.ingots - WEAPON_INGOT_COST;
@@ -180,9 +190,15 @@ public fun smith_weapon(world: &mut World, ctx: &mut TxContext): Weapon {
     weapon
 }
 
-public fun smith_armour(world: &mut World, ctx: &mut TxContext): Armour {
+public fun smith_armour(
+    world: &mut World,
+    cap: &mut SessionCap,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): Armour {
     world.assert_version();
-    let player = ctx.sender();
+    cap.consume_action(clock);
+    let player = cap.player();
     let state = world.player_mut(player);
     assert!(state.ingots >= ARMOUR_INGOT_COST, ENotEnoughIngots);
     state.ingots = state.ingots - ARMOUR_INGOT_COST;
@@ -193,12 +209,24 @@ public fun smith_armour(world: &mut World, ctx: &mut TxContext): Armour {
 }
 
 /// CLI convenience wrappers only — PTBs should call the public functions.
-entry fun smith_weapon_and_keep(world: &mut World, ctx: &mut TxContext) {
-    transfer::public_transfer(smith_weapon(world, ctx), ctx.sender());
+entry fun smith_weapon_and_keep(
+    world: &mut World,
+    cap: &mut SessionCap,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let weapon = smith_weapon(world, cap, clock, ctx);
+    transfer::public_transfer(weapon, cap.player());
 }
 
-entry fun smith_armour_and_keep(world: &mut World, ctx: &mut TxContext) {
-    transfer::public_transfer(smith_armour(world, ctx), ctx.sender());
+entry fun smith_armour_and_keep(
+    world: &mut World,
+    cap: &mut SessionCap,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let armour = smith_armour(world, cap, clock, ctx);
+    transfer::public_transfer(armour, cap.player());
 }
 
 // === Views (read via simulateTransaction, or fetch the dynamic field) ===

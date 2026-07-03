@@ -43,16 +43,7 @@ export const IngotSmeltedBcs = bcs.struct('IngotSmelted', {
   ingotTotal: bcs.u64(),
 });
 
-// === Transaction builders ===
-
-export function buildCreatePlayerTx(): Transaction {
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${PACKAGE_ID}::forge::create_player`,
-    arguments: [tx.object(WORLD_ID)],
-  });
-  return tx;
-}
+// === Transaction builders (all session-signed; see session.ts) ===
 
 export function buildMineTx(capId: string): Transaction {
   const tx = new Transaction();
@@ -77,12 +68,20 @@ export function buildSmeltTx(capId: string): Transaction {
   return tx;
 }
 
-/** Smithing returns the minted item; the PTB sends it to the player. */
-export function buildSmithTx(kind: 'weapon' | 'armour', player: string): Transaction {
+/**
+ * Smithing is session-gated like everything else. The minted NFT is
+ * transferred to the real player's wallet — the ephemeral signer never
+ * keeps assets.
+ */
+export function buildSmithTx(
+  kind: 'weapon' | 'armour',
+  capId: string,
+  player: string,
+): Transaction {
   const tx = new Transaction();
   const item = tx.moveCall({
     target: `${PACKAGE_ID}::forge::smith_${kind}`,
-    arguments: [tx.object(WORLD_ID)],
+    arguments: [tx.object(WORLD_ID), tx.object(capId), tx.object.clock()],
   });
   tx.transferObjects([item], tx.pure.address(player));
   return tx;

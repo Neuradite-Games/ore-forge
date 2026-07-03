@@ -45,5 +45,7 @@ or extrapolate from other blockchains.
   names, Svelte 5 runes. Type-check with `pnpm check`, verify with `pnpm build`.
 - Parse on-chain events from BCS (`event.bcs`), not the `json` field — the JSON
   shape varies between API implementations.
-- Session-gated verbs (mine, smelt) must stay non-extractive; anything minting
-  or moving assets requires the real wallet signature.
+- ALL gameplay verbs (mine, smelt, smith) are deliberately session-gated — the
+  project exists to test sign-once session keys, including NFT minting. Keep
+  the invariant that minted assets are always delivered to `cap.player()`,
+  never to the ephemeral signer.

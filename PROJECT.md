@@ -17,10 +17,12 @@ One Phaser canvas, three areas:
    Each smith mints a tradable `key, store` object (`Weapon` / `Armour`) sent to
    your wallet.
 
-The point of the exercise: mining and smelting run **without wallet popups** via
-the hand-rolled SessionCap pattern — one wallet signature mints a session
-capability for an ephemeral browser keypair, which then signs every click
-silently.
+**The point of the exercise is session keys**: you sign with your wallet
+exactly ONCE per session, and that signature covers everything — mining,
+smelting, and minting Weapon/Armour NFTs. The one signed transaction creates
+your player (if needed), mints a `SessionCap` for an ephemeral browser keypair,
+and funds it; every click after that is signed silently by the ephemeral key.
+Zero popups until the session expires.
 
 ## Stack
 
@@ -40,18 +42,24 @@ silently.
   is what makes session play possible.
 - **SessionCap is `key`-only** — can't be wrapped, traded, or generically
   transferred. Defense layers: Clock expiry (max 8 h), decrementing action
-  budget, and a **tier split**: the cap only gates non-extractive verbs
-  (`mine`, `smelt`). Smithing mints tradable assets, so it demands the real
-  wallet's signature. No revocation registry (would put a shared object in every
-  gameplay tx) — short expiry + owner-side `revoke` cover the prototype.
+  budget, owner-side `revoke`. No revocation registry (would put a shared
+  object in every gameplay tx).
+- **ALL verbs are session-gated, including NFT minting.** The reference doc's
+  production guidance is a "tier split" (session key gates only non-extractive
+  verbs; minting demands the real wallet), but the explicit goal of this
+  prototype is to test sign-once-then-mint-freely, so smithing takes the cap
+  too. Mitigation kept: minted NFTs are always delivered to `cap.player()` —
+  the real wallet — never to the ephemeral signer, so a stolen session key can
+  spend your ingots but cannot steal the resulting gear. Revisit the tier split
+  if this ever grows past a prototype.
 - **`mine` is a non-public `entry` fun** — required by the framework for
   functions consuming `Random` (blocks test-and-abort bias). Everything else is
   `public` for composability; smithing returns the object and lets the PTB
   decide where it goes.
-- **Session gas**: the session-start PTB splits off 0.05 SUI to the ephemeral
-  address so it can pay for its own transactions. Ending a session revokes the
-  cap and sweeps the remainder back. (Production path: sponsored transactions /
-  Enoki instead of an allowance.)
+- **One signature total**: the session-start PTB chains `create_player` (first
+  time only) + `session::mint` + a 0.05 SUI gas allowance to the ephemeral
+  address. Ending a session revokes the cap and sweeps the remainder back.
+  (Production path: sponsored transactions / Enoki instead of an allowance.)
 - **Frontend reads events from BCS** (`event.bcs` parsed with `bcs.struct`),
   not `event.json` — the JSON shape varies across API implementations.
 - **Upgrade hygiene**: `World.version` gate + `AdminCap` + `migrate()` from day
@@ -86,6 +94,11 @@ silently.
 - **2026-07-03** — Repo created. Contracts written and unit-tested (7/7 pass).
   Full frontend written and building. Not yet deployed to any network; app
   shows a "contracts not configured" banner until `.env` is filled in.
+- **2026-07-03 (later)** — Reworked per feedback: session keys are the star.
+  Dropped the wallet-signs-smithing tier split — the SessionCap now gates ALL
+  verbs including NFT minting (NFTs still delivered to the real wallet), and
+  player creation is folded into the session-start PTB. Net result: exactly one
+  wallet popup per session. Tests updated, still 7/7.
 
 ## Deploy instructions (manual — do this to reach M4)
 
@@ -126,11 +139,11 @@ needs the ids.
    pnpm dev
    ```
 
-   Flow to verify: connect wallet → **Create player** (wallet signs) → **Start
-   session** (wallet signs once; 0.05 SUI moves to the session key) → click ore
-   nodes / furnace (NO popups — this is the whole point) → smith a sword
-   (wallet signs) → check the Weapon object appears in your wallet → **End
-   session** (gas swept back).
+   Flow to verify: connect wallet → **Start session** (the ONLY wallet popup:
+   creates player + mints cap + funds the session key with 0.05 SUI) → click
+   ore nodes, furnace, and smith buttons — all with zero popups — → check the
+   Weapon/Armour objects appear in your real wallet → **End session** (cap
+   revoked, leftover gas swept back).
 
 5. Update this file: tick M4, note the package/world ids and any issues in the
    progress log.

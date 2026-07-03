@@ -90,7 +90,7 @@ export class ForgeScene extends Phaser.Scene {
         x: PANEL_WIDTH * 2,
         color: COLORS.anvilBg,
         label: '⚒  ANVIL',
-        hint: 'smith gear (wallet signs)',
+        hint: 'smith gear — no popups',
       },
     ];
     for (const panel of panels) {
