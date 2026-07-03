@@ -208,7 +208,9 @@ public fun smith_armour(
     armour
 }
 
-/// CLI convenience wrappers only — PTBs should call the public functions.
+/// The frontend calls these wrappers rather than the public functions:
+/// delivery to `cap.player()` happens inside Move, so no client can
+/// misdirect a minted NFT to the ephemeral signer (or anywhere else).
 entry fun smith_weapon_and_keep(
     world: &mut World,
     cap: &mut SessionCap,

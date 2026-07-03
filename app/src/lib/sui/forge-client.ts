@@ -69,21 +69,17 @@ export function buildSmeltTx(capId: string): Transaction {
 }
 
 /**
- * Smithing is session-gated like everything else. The minted NFT is
- * transferred to the real player's wallet — the ephemeral signer never
- * keeps assets.
+ * Smithing is session-gated like everything else. The `_and_keep` variant
+ * transfers the minted NFT to `cap.player()` INSIDE Move — delivery to the
+ * real wallet is an on-chain guarantee, not a client-side transfer the
+ * ephemeral signer could misdirect.
  */
-export function buildSmithTx(
-  kind: 'weapon' | 'armour',
-  capId: string,
-  player: string,
-): Transaction {
+export function buildSmithTx(kind: 'weapon' | 'armour', capId: string): Transaction {
   const tx = new Transaction();
-  const item = tx.moveCall({
-    target: `${PACKAGE_ID}::forge::smith_${kind}`,
+  tx.moveCall({
+    target: `${PACKAGE_ID}::forge::smith_${kind}_and_keep`,
     arguments: [tx.object(WORLD_ID), tx.object(capId), tx.object.clock()],
   });
-  tx.transferObjects([item], tx.pure.address(player));
   return tx;
 }
 

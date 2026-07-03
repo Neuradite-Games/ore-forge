@@ -21,11 +21,6 @@ use sui::event;
 const ESessionExpired: vector<u8> = b"Session has expired";
 #[error]
 const ENoActionsLeft: vector<u8> = b"Session action budget is exhausted";
-#[error]
-const ETtlTooLong: vector<u8> = b"Session TTL exceeds the maximum";
-
-/// Longest a session may live: 8 hours.
-const MAX_TTL_MS: u64 = 8 * 60 * 60 * 1000;
 
 /// `key`-only (no `store`): the cap cannot be wrapped, listed on a Kiosk, or
 /// moved by generic transfer functions — sessions can never become a
@@ -54,6 +49,10 @@ public struct SessionRevoked has copy, drop {
 /// Signed once by the real wallet: mints a cap scoped to the sender's player
 /// and hands it to the ephemeral session address. The cap is `key`-only so
 /// the transfer must happen here, not in the calling PTB.
+///
+/// `ttl_ms == 0` means the session never expires; `actions == 0` means the
+/// action budget is unlimited. Both encode as u64::MAX so `consume_action`
+/// needs no special cases. A forever-session lives until `revoke`.
 public fun mint(
     session_address: address,
     ttl_ms: u64,
@@ -61,19 +60,24 @@ public fun mint(
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    assert!(ttl_ms <= MAX_TTL_MS, ETtlTooLong);
+    let expires_at_ms = if (ttl_ms == 0) {
+        std::u64::max_value!()
+    } else {
+        clock.timestamp_ms() + ttl_ms
+    };
+    let actions_left = if (actions == 0) std::u64::max_value!() else actions;
     let cap = SessionCap {
         id: object::new(ctx),
         player: ctx.sender(),
-        expires_at_ms: clock.timestamp_ms() + ttl_ms,
-        actions_left: actions,
+        expires_at_ms,
+        actions_left,
     };
     event::emit(SessionMinted {
         cap_id: cap.id.to_inner(),
         player: cap.player,
         session_address,
-        expires_at_ms: cap.expires_at_ms,
-        actions,
+        expires_at_ms,
+        actions: actions_left,
     });
     transfer::transfer(cap, session_address);
 }

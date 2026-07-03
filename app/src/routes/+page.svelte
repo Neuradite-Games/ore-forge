@@ -28,6 +28,7 @@
     buildStartSessionTx,
     clearStoredSession,
     executeAsSession,
+    isUnlimited,
     loadEphemeralKeypair,
     loadStoredSession,
     parseSessionMinted,
@@ -110,7 +111,10 @@
       saveSession(session);
       gameState.hasPlayer = true;
       gameState.session = session;
-      addLog(`Session started: ${session.actionsLeft} actions, no more popups ⚡`);
+      const budget = isUnlimited(session.actionsLeft)
+        ? 'unlimited actions'
+        : `${session.actionsLeft} actions`;
+      addLog(`Session started: ${budget}, no more popups until you end it ⚡`);
     } catch (error) {
       addLog(`Start session failed: ${(error as Error).message}`);
     } finally {
@@ -154,7 +158,7 @@
   }
 
   function spendSessionAction() {
-    if (!gameState.session) return;
+    if (!gameState.session || isUnlimited(gameState.session.actionsLeft)) return;
     gameState.session.actionsLeft -= 1;
     saveSession($state.snapshot(gameState.session));
   }
@@ -237,11 +241,11 @@
     gameState.pending = `smith-${kind}`;
     gameEvents.emit('busy', { busy: true });
     try {
-      // Session-signed mint: the NFT lands in the real wallet, no popup.
+      // Session-signed mint: Move delivers the NFT to the real wallet.
       await executeAsSession(
         client,
         loadEphemeralKeypair(),
-        buildSmithTx(kind, gameState.session!.capId, address!),
+        buildSmithTx(kind, gameState.session!.capId),
       );
       spendSessionAction();
       gameState.ingots -= cost;
@@ -270,8 +274,13 @@
   });
 
   function formatExpiry(expiresAtMs: number): string {
+    if (isUnlimited(expiresAtMs)) return 'until you end it';
     const minutes = Math.max(0, Math.round((expiresAtMs - Date.now()) / 60_000));
     return `${minutes} min left`;
+  }
+
+  function formatActions(actionsLeft: number): string {
+    return isUnlimited(actionsLeft) ? '∞' : `${actionsLeft}/${SESSION_ACTIONS}`;
   }
 </script>
 
@@ -314,7 +323,7 @@
           <h2>Session</h2>
           {#if gameState.session}
             <p class="session-live">
-              ⚡ live — {gameState.session.actionsLeft}/{SESSION_ACTIONS} actions,
+              ⚡ live — {formatActions(gameState.session.actionsLeft)} actions,
               {formatExpiry(gameState.session.expiresAtMs)}
             </p>
             <button onclick={endSession} disabled={gameState.pending !== null}>
@@ -323,7 +332,8 @@
           {:else}
             <p>
               Sign <strong>once</strong> to start a session — then everything (mining, smelting,
-              smithing NFTs) runs with zero popups.
+              smithing NFTs) runs with zero popups, forever, until you end it. NFTs always
+              land in your real wallet.
             </p>
             <button onclick={startSession} disabled={gameState.pending !== null}>
               Start session

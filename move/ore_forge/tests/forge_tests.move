@@ -149,6 +149,40 @@ fun exhausted_session_cannot_act() {
     abort
 }
 
+#[test]
+fun forever_session_survives_time_and_exhaustion() {
+    // ttl 0 = never expires, actions 0 = unlimited.
+    let mut scenario = setup(0, 0);
+
+    scenario.next_tx(PLAYER);
+    let mut world = scenario.take_shared<World>();
+    forge::add_ore_for_testing(&mut world, PLAYER, 6);
+    ts::return_shared(world);
+
+    // Ten years later the same cap still works.
+    scenario.next_tx(SESSION_ADDRESS);
+    let mut world = scenario.take_shared<World>();
+    let mut cap = scenario.take_from_sender<SessionCap>();
+    let mut clock = clock::create_for_testing(scenario.ctx());
+    clock.set_for_testing(10 * 365 * 24 * HOUR_MS);
+    forge::smelt(&mut world, &mut cap, &clock);
+    forge::smelt(&mut world, &mut cap, &clock);
+    let weapon = forge::smith_weapon(&mut world, &mut cap, &clock, scenario.ctx());
+    transfer::public_transfer(weapon, cap.player());
+    let (_, _, weapons, _) = forge::player_stats(&world, PLAYER);
+    assert_eq!(weapons, 1);
+    scenario.return_to_sender(cap);
+    ts::return_shared(world);
+    clock.destroy_for_testing();
+
+    // Manual close is the only way out: revoke destroys the cap.
+    scenario.next_tx(SESSION_ADDRESS);
+    let cap = scenario.take_from_sender<SessionCap>();
+    session::revoke(cap);
+
+    scenario.end();
+}
+
 #[test, expected_failure(abort_code = forge::EPlayerAlreadyExists, location = forge)]
 fun duplicate_player_aborts() {
     let mut scenario = setup(HOUR_MS, 10);

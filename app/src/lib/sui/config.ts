@@ -19,11 +19,13 @@ export const WORLD_ID = env.PUBLIC_WORLD_ID ?? '0x0';
 
 export const isConfigured = PACKAGE_ID !== '0x0' && WORLD_ID !== '0x0';
 
-// Session parameters (must respect session.move's MAX_TTL_MS of 8h).
-export const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
-export const SESSION_ACTIONS = 200;
-/** Gas allowance transferred to the ephemeral key: 0.05 SUI. */
-export const SESSION_GAS_MIST = 50_000_000n;
+// Session parameters. 0 = forever / unlimited (on-chain sentinel u64::MAX):
+// the session lives until you manually End session (revoke).
+export const SESSION_TTL_MS = 0;
+export const SESSION_ACTIONS = 0;
+/** Gas allowance transferred to the ephemeral key: 0.1 SUI. Forever-sessions
+ * can top this up any time by sending SUI to the session address. */
+export const SESSION_GAS_MIST = 100_000_000n;
 
 // Recipe costs — mirror the constants in forge.move.
 export const SMELT_ORE_COST = 3;

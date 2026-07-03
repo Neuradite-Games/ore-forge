@@ -48,6 +48,14 @@ export function loadEphemeralKeypair(): Ed25519Keypair {
   return keypair;
 }
 
+/**
+ * On-chain "forever" is the u64::MAX sentinel (~1.8e19). Anything past
+ * MAX_SAFE_INTEGER can only be that sentinel, so this test is exact enough.
+ */
+export function isUnlimited(value: number): boolean {
+  return value >= Number.MAX_SAFE_INTEGER;
+}
+
 export function loadStoredSession(player: string): SessionInfo | null {
   const raw = localStorage.getItem(SESSION_STORAGE);
   if (!raw) return null;

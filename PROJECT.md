@@ -18,11 +18,27 @@ One Phaser canvas, three areas:
    your wallet.
 
 **The point of the exercise is session keys**: you sign with your wallet
-exactly ONCE per session, and that signature covers everything — mining,
-smelting, and minting Weapon/Armour NFTs. The one signed transaction creates
-your player (if needed), mints a `SessionCap` for an ephemeral browser keypair,
-and funds it; every click after that is signed silently by the ephemeral key.
-Zero popups until the session expires.
+exactly ONCE, and that signature covers everything — mining, smelting, and
+minting Weapon/Armour NFTs — **forever, until you manually end the session**.
+The one signed transaction creates your player (if needed), mints a
+`SessionCap` for an ephemeral browser keypair, and funds it; every click after
+that is signed silently by the ephemeral key.
+
+### How assets reach the real wallet without extra signatures
+
+The signer of a Sui transaction and the owner of the objects it creates are
+independent — ownership is data on the object, decided by what the Move code
+does, not "sender keeps it". Concretely:
+
+- Ore/ingots are counters in a dynamic field on the shared `World` keyed by
+  `cap.player` (the real wallet). Game functions never consult `ctx.sender()`
+  (which would be the ephemeral key).
+- Smithing goes through `smith_*_and_keep`, which does
+  `transfer::public_transfer(item, cap.player())` **inside Move** — NFT
+  delivery to the real wallet is an on-chain guarantee in the same
+  session-signed transaction; no client code (or attacker holding the
+  ephemeral key) can redirect it.
+- The ephemeral address only ever holds the `SessionCap` and its gas coin.
 
 ## Stack
 
@@ -41,9 +57,13 @@ Zero popups until the session expires.
   passed by transactions the *real wallet* signs. Reachability from shared state
   is what makes session play possible.
 - **SessionCap is `key`-only** — can't be wrapped, traded, or generically
-  transferred. Defense layers: Clock expiry (max 8 h), decrementing action
-  budget, owner-side `revoke`. No revocation registry (would put a shared
-  object in every gameplay tx).
+  transferred. Supports Clock expiry and an action budget, but **`ttl_ms = 0`
+  / `actions = 0` mean forever/unlimited** (encoded as `u64::MAX` on-chain),
+  and the app mints forever-sessions — per the project goal, a session lives
+  until you hit End session (`revoke`). No revocation registry (would put a
+  shared object in every gameplay tx). Stolen-localStorage tradeoff accepted
+  knowingly: a thief could spend your ore/ingots and gas until you revoke,
+  but can never extract NFTs (they always land in `cap.player()`).
 - **ALL verbs are session-gated, including NFT minting.** The reference doc's
   production guidance is a "tier split" (session key gates only non-extractive
   verbs; minting demands the real wallet), but the explicit goal of this
@@ -57,9 +77,11 @@ Zero popups until the session expires.
   `public` for composability; smithing returns the object and lets the PTB
   decide where it goes.
 - **One signature total**: the session-start PTB chains `create_player` (first
-  time only) + `session::mint` + a 0.05 SUI gas allowance to the ephemeral
+  time only) + `session::mint` + a 0.1 SUI gas allowance to the ephemeral
   address. Ending a session revokes the cap and sweeps the remainder back.
-  (Production path: sponsored transactions / Enoki instead of an allowance.)
+  If a long-lived session runs dry, send more SUI to the session address (or
+  end/restart). (Production path: sponsored transactions / Enoki instead of
+  an allowance.)
 - **Frontend reads events from BCS** (`event.bcs` parsed with `bcs.struct`),
   not `event.json` — the JSON shape varies across API implementations.
 - **Upgrade hygiene**: `World.version` gate + `AdminCap` + `migrate()` from day
@@ -99,6 +121,11 @@ Zero popups until the session expires.
   verbs including NFT minting (NFTs still delivered to the real wallet), and
   player creation is folded into the session-start PTB. Net result: exactly one
   wallet popup per session. Tests updated, still 7/7.
+- **2026-07-03 (later still)** — Forever sessions: `ttl_ms = 0` / `actions = 0`
+  now mean never-expires/unlimited (u64::MAX on-chain); the app mints
+  forever-sessions that live until End session. NFT delivery moved fully
+  on-chain (frontend calls `smith_*_and_keep`, which transfers to
+  `cap.player()` in Move). Gas allowance bumped to 0.1 SUI. Tests 8/8.
 
 ## Deploy instructions (manual — do this to reach M4)
 
@@ -140,10 +167,11 @@ needs the ids.
    ```
 
    Flow to verify: connect wallet → **Start session** (the ONLY wallet popup:
-   creates player + mints cap + funds the session key with 0.05 SUI) → click
-   ore nodes, furnace, and smith buttons — all with zero popups — → check the
-   Weapon/Armour objects appear in your real wallet → **End session** (cap
-   revoked, leftover gas swept back).
+   creates player + mints a forever-cap + funds the session key with 0.1 SUI)
+   → click ore nodes, furnace, and smith buttons — all with zero popups —
+   → check the Weapon/Armour objects appear in your REAL wallet (not the
+   session address) → reload the page: the session persists from localStorage
+   → **End session** (cap revoked, leftover gas swept back).
 
 5. Update this file: tick M4, note the package/world ids and any issues in the
    progress log.

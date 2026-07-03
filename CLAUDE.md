@@ -46,6 +46,8 @@ or extrapolate from other blockchains.
 - Parse on-chain events from BCS (`event.bcs`), not the `json` field — the JSON
   shape varies between API implementations.
 - ALL gameplay verbs (mine, smelt, smith) are deliberately session-gated — the
-  project exists to test sign-once session keys, including NFT minting. Keep
-  the invariant that minted assets are always delivered to `cap.player()`,
-  never to the ephemeral signer.
+  project exists to test sign-once session keys, including NFT minting.
+  Sessions are forever by default (`ttl_ms = 0` / `actions = 0` → u64::MAX)
+  and end only via `revoke`. Keep the invariant that minted assets are always
+  delivered to `cap.player()` inside Move (`smith_*_and_keep`), never to the
+  ephemeral signer and never via client-side transfers.
